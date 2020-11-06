@@ -1,0 +1,54 @@
+{-# LANGUAGE DisambiguateRecordFields, NamedFieldPuns, RecordWildCards       #-}
+{-# LANGUAGE ParallelListComp                                                #-}
+
+module Controller.Time (
+    timeHandler,
+    trolli
+) where
+
+import Control.Arrow ((>>>))
+
+import Data.List
+
+import Graphics.Gloss
+import Graphics.Gloss.Geometry
+import Graphics.Gloss.Data.Vector
+
+import System.Random
+
+import Model
+
+-- | Time handling
+
+addV :: Vector -> Vector -> Vector
+addV (u1,u2) (v1,v2) = (u1+v1, u2+v2)
+
+trolli :: World -> String
+trolli world@(World{..}) = show $ angle player
+
+timeHandler :: Float -> World -> World
+timeHandler time world@(World{..}) = world{player=p}
+                                    where 
+                                        ang     = case rotateAction of
+                                            RotateLeft  -> (pi/50)
+                                            RotateRight -> 0 - (pi/50)
+                                            NoRotation  -> 0 
+                                        acc    = case movementAction of
+                                            Thrust      -> (0, 0.3) 
+                                            NoMovement  -> (0,0)
+                                        velo    = mulSV 0.98 $ addV (vel player) $ rotateV (angle player + ang) acc
+                                        direc   = rotateV (ang) $ dir player
+                                        newPos  = addV (pos player) velo
+                                        tr      | (length $ trail player) < 10 = pos player : trail player
+                                                | otherwise                  = pos player : (tail $ trail player)
+                                        p       = Player (newPos) (direc) (velo) (angle player + ang) tr  
+                                    
+                                
+                                            
+
+
+{-case rotateAction of
+                                        RotateLeft -> world{position=(fst position - 5.0, snd position)}
+                                        RotateRight -> world{position=(fst position + 5.0, snd position)}
+                                        NoRotation -> world
+-}

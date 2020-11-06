@@ -1,0 +1,241 @@
+{-# LANGUAGE DisambiguateRecordFields, NamedFieldPuns, RecordWildCards       #-}
+{-# LANGUAGE ParallelListComp                                                #-}
+
+module Controller.Time (
+    timeHandler
+) where
+
+import Control.Arrow ((>>>))
+
+import Data.List
+
+import Graphics.Gloss
+import Graphics.Gloss.Geometry
+import Graphics.Gloss.Data.Vector
+
+import System.Random
+import System.IO
+
+import Model
+
+-- | Time handling
+
+addV :: Vector -> Vector -> Vector
+addV (u1,u2) (v1,v2) = (u1+v1, u2+v2)
+
+timeHandler :: Float -> Float -> Float -> World -> IO World
+timeHandler w h time world@(World{..}) = 
+  do
+    -- if new highscore is obtained write it to the file
+    case newHigh /= highScore of
+      True -> do
+        handle <- openFile "high.score" ReadWriteMode
+        sequence $ map (hPutStrLn handle . show) highScoreList'
+        hClose handle
+        return ()
+      _ -> return ()
+    let ret = case state of
+              0 -> case shootAction of
+                    Shoot -> world{state = 1} --
+                    _     -> world
+              1 -> world{enemies = es, bullets = bs, bonus = bonus', 
+                    upgrade = upgrade', particles = ps', bgParticles = pMap, 
+                    score = newScore, highScore = newHigh, multiplier = newMult, 
+                    velocity = vel', angle = ang, cooldown = cd, weapon = weap', 
+                    pUpDuration = dur', backgrounds = bgs, randomList = rans, 
+                    highScoreList = highScoreList', state = state'} 
+    return ret
+    where
+      -- constants
+      state'   = if crash then 0 else 1
+      theta    = pi/40
+      decay    = 0.98
+      player   = Object (0,0) velocity
+      pickUpRadius = 45
+      -- reference to actual screen size FIX
+      localW   = w --half width of a map section
+      localH   = h --"  " height"              "
+      -- random map locations
+      startPos = [Map (10,10) (0,0) 0,
+                  Map (-5,6) (0,0) 1,
+                  Map (-8,1) (0,0) 2,
+                  Map (2,9) (0,0) 3,
+                  Map (-7,-7) (0,0) 4]
+  
+      -- variables
+      ang   = if crash then 0 else angle + case rotateAction of
+              RotateLeft  -> theta
+              RotateRight -> -theta
+              NoRotation  -> 0
+      acc   = case movementAction of 
+              Thrust      -> (0.15, 0) 
+              NoMovement  -> (0,0)
+  
+      -- randoms 
+      (ran1:ran2:rans) = randomList
+  
+      -- global movement
+      gMove o = o {pos = addV (pos o) (mulSV (-1) vel') }
+      up    o = o {pos = addV (pos o) (vel o), vel = mulSV decay (vel o)} 
+      
+      --collision
+      col o1 colRad o2 = magV (pos o1 - pos o2) < colRad 
+      crash            = any (col player 25 . eObj) enemies
+  
+      -- player   
+      vel'   = if crash then (0,0) 
+        else mulSV decay $ addV velocity $ rotateV ang acc   
+      cd     = case shootAction of
+               Shoot     -> mod (cooldown + 1) weapCd
+               DontShoot -> if cooldown > 0 then mod (cooldown + 1) weapCd 
+                else cooldown
+  
+  
+      --background movement
+      --new backgrounds
+      bgs      = if crash then startPos else map moveBG backgrounds 
+      moveBG m = m {localLoc = lLoc, mapLoc = mLoc}
+               where
+               lLoc    = (lX', lY')
+               (lX,lY) = addV (localLoc m) (mulSV (plFac m) vel')
+               lX'     | abs lX > localW = 0
+                       | otherwise       =  lX
+               lY'     | abs lY > localH = 0
+                       | otherwise       =  lY
+               mLoc    = let (x,y) = mapLoc m in (x+shiftX, y+shiftY)
+               shiftX  | lX >   localW  =   1
+                       | lX < (-localW) =  -1
+                       | otherwise      =   0
+               shiftY  | lY >   localH  =   1
+                       | lY < (-localH) =  -1
+                       | otherwise      =   0
+      plFac m = 1.0 - (fromIntegral (mapType m) * 0.2)
+  
+      --background creation
+      pMap           = concatMap getParticles backgrounds
+      getParticles m = 
+        let (x,y)    = mapLoc m
+            (vx,vy)  = mulSV (-1) (localLoc m)
+            dx w'    = vx + fromIntegral (w'-x)*localW
+            dy h'    = vy + fromIntegral (h'-y)*localH
+            translateSecP (w, h) p = 
+              p {pObj = (pObj p){pos = addV (pos (pObj p)) (dx w, dy h)}}
+            createPs  (px,py) = map (translateSecP (px, py)) (localPMap (px, py) m)
+        in concatMap  createPs [(x+x', y+y')|x' <- [-1,0,1], y' <- [-1,0,1]]
+                           
+      localPMap (x,y) m = 
+        [Particle (Object (f x n,g y n) (0, 0)) lt 2 | n <- [0, 5..30]]
+          where f a b = fromIntegral $ rem (a*(-3)^b + b) $ round localW
+                g a b = fromIntegral $ rem (a*(-3)^b + b) $ round localH
+                lt = fromIntegral (mapType m)
+  
+      -- enemy updater
+      es            = if crash then [] else filter 
+                      (\e -> magV (pos (eObj e)) < 550) $ newE ++ map eGT es'
+      newE          = [Enemy (Object (addV ran1 (rotateV (argV ran1) (400,0))) 
+                        (0,0)) (eDifficulty+1) eDifficulty | length es' < 10]
+      eDifficulty   | score < 100 = 0
+                    | score < 200 = 1
+                    | score < 300 = 2
+                    | score < 400 = 3
+                    | otherwise   = 4
+      hitRad        = 25 + weapSize
+      (hitEs, es')  = partition (\e -> any (col (eObj e) hitRad . bObj) 
+                        bullets && magV (pos (eObj e)) > hitRad) enemies
+      -- enemy movement
+      eMove e o = o {pos = addV (mulSV 0.997 (pos o)) 
+                            (mulSV (-speed/magV (pos o)) (pos o))}
+                where speed = case eType e of
+                              0 -> 0.2
+                              1 -> 0.6
+                              2 -> 0.9 
+                              3 -> 1.2
+                              4 -> 2.0
+      --eMove o = o {pos = addV (pos o) (mulSV (-0.8) vel') }
+      eGT e = e {eObj = (gMove.eMove e) (eObj e)}
+  
+      -- weapon
+      weapCd   = case weapon of
+                 0 -> 10
+                 1 -> 2
+                 2 -> 15
+                 3 -> 50
+      weapSize = case weapon of
+                 0 -> 2
+                 1 -> 1
+                 2 -> 25
+                 3 -> 40
+      weap'    | gotUpgrade       = iType upgrade
+               | pUpDuration == 0 = 0
+               | otherwise        = weapon
+      dur'     | crash            = 0
+               | gotUpgrade       = weapDur
+               | cooldown == 0 && 
+                  pUpDuration > 0 = case shootAction of
+                                    Shoot     -> pUpDuration - 1
+                                    DontShoot -> pUpDuration
+               | otherwise        = pUpDuration
+      weapDur = case iType upgrade of
+                1 -> 100
+                2 -> 50
+                3 -> 10
+  
+      -- bullet updater
+      bs            = if crash then [] else newB ++ bsMod bullets
+      bsMod bs      = filter (\b -> bLifeTime b > 0) $ 
+                      map ((\b -> b{bObj = up (bObj b)}).dyingB) bs
+      dyingB  b     = b{bLifeTime = bLifeTime b - time}
+      newB          = case (shootAction, cooldown) of
+                     (Shoot, 0) -> bullet
+                     (_, _)     -> []
+      bullet        = case weapon of
+                      0 -> [bCreator 15 angle 0.5]
+                      1 -> [bCreator 15 angle 0.5]
+                      2 -> [bCreator 15 (angle + x*theta) 0.5 | x <- [-1, 0, 1]]
+                      3 -> [bCreator 15 x 0.5 | x <- [0, pi/4 .. 2*pi]]
+      bCreator sp a = Bullet (Object (0,0) (mulSV sp (cos a, sin a)))
+      
+      -- particle update
+      ps                = if crash then deadPs else 
+                          newPs ++ map psMod (filter pCheck particles)
+      psMod             = (\p -> p{pObj = (gMove . up) (pObj p)}).dyingP
+      pCheck p          = pLifeTime p > 0 
+      newPs             = concatMap (explosion 1 8 10 . pos . eObj) hitEs
+      deadPs            = explosion 0 16 20 (0,0)
+      dyingP p          = p {pLifeTime = pLifeTime p - time}
+      explosion y n s v = [Particle (Object v (s * cos x, s * sin x)) 0.5 y |
+                       x <- [0, (pi/n)..(2*pi)]]
+                  
+      -- trails
+      trail   = Particle (Object (0,0) $ mulSV (-1) vel') 0.5 3
+      ps'     = case movementAction of
+              Thrust      -> trail:ps
+              NoMovement  -> ps
+  
+      -- item updater
+      -- bonus multiplier
+      bonus'   = if crash then [] else newI ++ filter iCheck 
+                  (map ((\i -> i{iObj = gMove (iObj i)}).dyingI.iPicked) bonus)
+      dyingI i = i {iLifeTime = iLifeTime i - time}
+      iPicked i = if col (iObj i) pickUpRadius player && pickedUp i == False 
+                  then i {pickedUp = True, iLifeTime = 0.25} else i
+      iCheck i = iLifeTime i > 0  && 
+                  magV (pos (iObj i)) < 1000
+      newI     = 
+        [Item (Object (addV ran2 (rotateV (argV ran2) (400,0))) (0,0)) 10 0 False | 
+          length bonus < 3]
+      -- weapon upgrade
+      gotUpgrade  = iLifeTime upgrade < 0
+      upgrade'    = dyingI $ iPicked upG'{iObj = gMove (iObj upG')}
+      upG'        = 
+        if gotUpgrade || crash || magV (pos (iObj upgrade)) > 1000 then 
+          Item (Object (addV ran2 (rotateV (argV ran2) (200,0))) (0,0)) 20 
+          (mod (iType upgrade) 3 + 1) False else upgrade
+  
+      -- score updater
+      newScore = if crash then 0 else score + multiplier * sum (map eScore hitEs)
+      newMult  | crash = 10 -- col (Object (0,0) (0,0)) pickUpRadius (iObj x) && not (pickedUp x)
+               | any (\x -> pickedUp (iPicked x) && iLifeTime (iPicked x) == 0.25) bonus = multiplier + 20 
+               | otherwise = multiplier
+      newHigh  = if crash && score > highScore then score else highScore
+      highScoreList' = if crash then take 10 $ reverse $ sort $ score:highScoreList else highScoreList

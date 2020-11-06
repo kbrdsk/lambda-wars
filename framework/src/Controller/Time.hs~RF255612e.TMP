@@ -1,0 +1,49 @@
+{-# LANGUAGE DisambiguateRecordFields, NamedFieldPuns, RecordWildCards       #-}
+{-# LANGUAGE ParallelListComp                                                #-}
+
+module Controller.Time (
+    timeHandler,
+    trolli
+) where
+
+import Control.Arrow ((>>>))
+
+import Data.List
+
+import Graphics.Gloss
+import Graphics.Gloss.Geometry
+import Graphics.Gloss.Data.Vector
+
+import System.Random
+
+import Model
+
+-- | Time handling
+
+addV :: Vector -> Vector -> Vector
+addV (u1,u2) (v1,v2) = (u1+v1, u2+v2)
+
+trolli :: World -> String
+trolli world@(World{..}) = show $ angle player
+
+timeHandler :: Float -> World -> World
+timeHandler time world@(World{..}) = world{player=p}
+                                    where 
+                                        ang     = case rotateAction of
+                                            RotateLeft  -> (pi/50)
+                                            RotateRight -> 0 - (pi/50)
+                                            NoRotation  -> 0 
+                                        velo    = case movementAction of
+                                            Thrust      -> (0, 1) 
+                                            NoMovement  -> (0,0)
+                                        p       = Player (rotateV (ang) $ addV (pos player) $ rotateV (angle player) velo) (dir player) (vel player) (mod (angle player + ang) pi)    
+                                    
+                                
+                                            
+
+
+{-case rotateAction of
+                                        RotateLeft -> world{position=(fst position - 5.0, snd position)}
+                                        RotateRight -> world{position=(fst position + 5.0, snd position)}
+                                        NoRotation -> world
+-}
